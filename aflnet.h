@@ -5,6 +5,7 @@
 #include "khash.h"
 #include <arpa/inet.h>
 #include <poll.h>
+#include <sys/un.h>
 
 typedef struct {
   int start_byte;                 /* The start byte, negative if unknown. */
@@ -31,6 +32,14 @@ typedef struct {
   void **seeds;               /* keeps all seeds reaching this state -- can be casted to struct queue_entry* */
   u32 seeds_count;            /* total number of seeds, it must be equal the size of the seeds array */
 } state_info_t;
+
+typedef struct sock_addr {
+    union {
+        struct sockaddr sa;
+        struct sockaddr_un su;
+        struct sockaddr_in sin;
+    } sock;
+} sock_addr;
 
 enum {
   /* 00 */ PRO_TCP,
