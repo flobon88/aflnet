@@ -5,6 +5,7 @@
 #include "khash.h"
 #include <arpa/inet.h>
 #include <poll.h>
+#include <sys/time.h>
 #include <sys/un.h>
 
 typedef struct {

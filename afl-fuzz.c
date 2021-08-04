@@ -1081,12 +1081,12 @@ int send_over_network() //TODO//////////////////////////////////////////////
         }
     }
 
-    if (connect(sockfd, (struct sockaddr *) &serv_addr.sock.sa, sock_fam == AF_INET ?
+    if (connect(sockfd, &serv_addr.sock.sa, sock_fam == AF_INET ?
             sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) < 0) {
         //If it cannot connect to the server under test
         //try it again as the server initial startup time is varied
         for (n = 0; n < 1000; n++) {
-            if (connect(sockfd, (struct sockaddr *) &serv_addr, sock_fam == AF_INET ?
+            if (connect(sockfd, &serv_addr.sock.sa, sock_fam == AF_INET ?
                     sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) == 0) break;
             usleep(1000);
         }
