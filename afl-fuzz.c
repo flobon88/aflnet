@@ -911,7 +911,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run) {
 
         was_fuzzed_map[0][q->index] = 0; //Mark it as reachable but not fuzzed
     } else {
-        PFATAL("AFLNet - the states hashtable should always contain an entry of the initial state");
+        //PFATAL("AFLNet - the states hashtable should always contain an entry of the initial state");
     }
 
     //Now update other states
