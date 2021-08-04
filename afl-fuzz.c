@@ -394,6 +394,7 @@ u8 state_aware_mode = 0;
 u8 region_level_mutation = 0;
 u8 state_selection_algo = ROUND_ROBIN, seed_selection_algo = RANDOM_SELECTION;
 u8 false_negative_reduction = 0;
+char unix_socket_path[108];
 sa_family_t sock_fam = AF_INET;
 
 /* Implemented state machine */
@@ -9155,6 +9156,9 @@ int main(int argc, char **argv) {
                 if (local_port < 1024 || local_port > 65535) FATAL("Invalid source port number");
                 break;
             case 'U': /* to use unix domain socket*/
+                memset(&unix_socket_path,0,108);
+            if (sscanf(optarg, "%s", unix_socket_path) < 1 || optarg[0] == '-')
+                FATAL("Bad syntax used for -U");
                 sock_fam = AF_UNIX;
                 break;
             default:
