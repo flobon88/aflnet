@@ -1084,8 +1084,7 @@ int send_over_network() //TODO packete anpassen ip und so.
         snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path),
                  "/tmp/afl_net_socket.%ld", (long) getpid());
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.su, sizeof(struct sockaddr_un))) {
-            WARNF("Path: %s Socket: %d Socket_FD: %d",local_serv_addr.sock.su.sun_path,sock_fam, sockfd);
-            FATAL("Unable to bind socket on unix domain socket");
+            FATAL("Unable to bind socket on unix domain socket. Path: %s Socket: %d Socket_FD: %d",local_serv_addr.sock.su.sun_path,sock_fam, sockfd);
         }
     }
 
