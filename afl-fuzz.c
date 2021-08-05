@@ -380,7 +380,7 @@ char **was_fuzzed_map = NULL; /* A 2D array keeping state-specific was_fuzzed in
 u32 fuzzed_map_states = 0;
 u32 fuzzed_map_qentries = 0;
 u32 max_seed_region_count = 0;
-u32 local_port;        /* TCP/UDP port number to use as source */
+u32 local_port = 0;        /* TCP/UDP port number to use as source */
 
 /* flags */
 u8 use_net = 0;
@@ -396,6 +396,12 @@ u8 state_selection_algo = ROUND_ROBIN, seed_selection_algo = RANDOM_SELECTION;
 u8 false_negative_reduction = 0;
 char unix_socket_path[108];
 sa_family_t sock_fam = AF_INET;
+#define PSEUDO_IP4_HDR ((u32) 13);
+#define IP_HDR_INDEX_ADDR_REMOTE_VER4 ((ssize_t)1)
+#define IP_HDR_INDEX_ADDR_LOCAL_VER4 ((ssize_t)5)
+#define IP_HDR_INDEX_PORT_REMOTE_VER4 ((ssize_t)9)
+#define IP_HDR_INDEX_PORT_LOCAL_VER4 ((ssize_t)11)
+#define IP_HDR_LEN ((ssize_t)13)
 
 /* Implemented state machine */
 Agraph_t *ipsm;
@@ -996,7 +1002,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run) {
 }
 
 /* Send (mutated) messages in order to the server under test */
-int send_over_network() //TODO//////////////////////////////////////////////
+int send_over_network() //TODO packete anpassen ip und so.
 {
     int n;
     u8 likely_buggy = 0;
@@ -1055,7 +1061,7 @@ int send_over_network() //TODO//////////////////////////////////////////////
     } else {
         memset(&serv_addr, 0, sizeof(struct sockaddr_un));
         serv_addr.sock.su.sun_family = AF_UNIX;
-        memcpy(&serv_addr.sock.su.sun_path, net_ip, sizeof((const u8 *) net_ip));
+        memcpy(&serv_addr.sock.su.sun_path, unix_socket_path, sizeof(unix_socket_path));
     }
 
 
@@ -1066,7 +1072,7 @@ int send_over_network() //TODO//////////////////////////////////////////////
         local_serv_addr.sock.sin.sin_family = AF_INET;
         local_serv_addr.sock.sin.sin_addr.s_addr = INADDR_ANY;
         local_serv_addr.sock.sin.sin_port = htons(local_port);
-
+        WARNF("I'm in AF_INET");
         local_serv_addr.sock.sin.sin_addr.s_addr = inet_addr("127.0.0.1");
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.sin, sizeof(struct sockaddr_in))) {
             FATAL("Unable to bind socket on local source port");
@@ -1078,17 +1084,19 @@ int send_over_network() //TODO//////////////////////////////////////////////
         snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path),
                  "/tmp/afl_net_socket.%ld", (long) getpid());
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.su, sizeof(struct sockaddr_un))) {
+            WARNF("Path: %s Socket: %d Socket_FD: %d",local_serv_addr.sock.su.sun_path,sock_fam, sockfd);
             FATAL("Unable to bind socket on unix domain socket");
         }
     }
 
     if (connect(sockfd, &serv_addr.sock.sa, sock_fam == AF_INET ?
-            sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) < 0) {
+                                            sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) < 0) {
         //If it cannot connect to the server under test
         //try it again as the server initial startup time is varied
         for (n = 0; n < 1000; n++) {
             if (connect(sockfd, &serv_addr.sock.sa, sock_fam == AF_INET ?
-                    sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) == 0) break;
+                                                    sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) == 0)
+                break;
             usleep(1000);
         }
         if (n == 1000) {
@@ -5471,12 +5479,30 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len) {
             len = regions[i].end_byte - regions[i].start_byte + 1;
         }
 
+        if (sock_fam == AF_UNIX) {
+            len += PSEUDO_IP4_HDR;
+        }
+
         //Create a new message
-        message_t *m = (message_t *) ck_alloc(sizeof(message_t));
+        message_t *m = (message_t *) ck_alloc(sizeof(message_t)); //TODO hier die adressen hinzufügen
         m->mdata = (char *) ck_alloc(len);
         m->msize = len;
         if (m->mdata == NULL) PFATAL("Unable to allocate memory region to store new message");
-        memcpy(m->mdata, &out_buf[regions[i].start_byte], len);
+
+        if (sock_fam == AF_UNIX) {
+            uint8_t ipv4_hdr[IP_HDR_LEN];
+            in_addr_t local_ip = inet_addr("127.0.0.1");
+            local_port = local_port == 0 ? 8899 : local_port; /* Default port if not set.*/
+            ipv4_hdr[0] = '\004'; /* Ipv4 indicator */
+            memcpy(&ipv4_hdr[IP_HDR_INDEX_ADDR_REMOTE_VER4], net_ip,sizeof(in_addr_t));
+            memcpy(&ipv4_hdr[IP_HDR_INDEX_ADDR_LOCAL_VER4], &local_ip, sizeof(in_addr_t));
+            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_REMOTE_VER4], &net_port,sizeof(in_port_t));
+            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_LOCAL_VER4], &local_port,sizeof(in_port_t));
+            memcpy(m->mdata, &ipv4_hdr, IP_HDR_LEN);
+            memcpy(m->mdata, &out_buf[regions[i].start_byte + IP_HDR_LEN], len - IP_HDR_LEN);
+        } else {
+            memcpy(m->mdata, &out_buf[regions[i].start_byte], len);
+        }
 
         //Insert the message to the linked list
         *kl_pushp(lms, kl_messages) = m;
@@ -9156,9 +9182,9 @@ int main(int argc, char **argv) {
                 if (local_port < 1024 || local_port > 65535) FATAL("Invalid source port number");
                 break;
             case 'U': /* to use unix domain socket*/
-                memset(&unix_socket_path,0,108);
-            if (sscanf(optarg, "%s", unix_socket_path) < 1 || optarg[0] == '-')
-                FATAL("Bad syntax used for -U");
+                memset(&unix_socket_path, 0, 108);
+                if (sscanf(optarg, "%s", unix_socket_path) < 1 || optarg[0] == '-')
+                    FATAL("Bad syntax used for -U");
                 sock_fam = AF_UNIX;
                 break;
             default:
