@@ -1048,7 +1048,7 @@ int send_over_network() //TODO packete anpassen ip und so.
     timeout.tv_usec = socket_timeout_usecs;
     setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *) &timeout, sizeof(timeout));
 
-    //memset(&serv_addr, 0, sizeof(serv_addr));
+    //memset(&serv_addr, 0, sizeof(serv_addr)); TODO schauen, warum das nicht eght
     memset(&serv_addr, 0, sock_fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_un));
 
     //serv_addr.sin_family = sock_fam;
@@ -1059,7 +1059,7 @@ int send_over_network() //TODO packete anpassen ip und so.
         serv_addr.sock.sin.sin_port = htons(net_port);
         serv_addr.sock.sin.sin_addr.s_addr = inet_addr(net_ip);
     } else {
-        memset(&serv_addr, 0, sizeof(struct sockaddr_un));
+        memset(&serv_addr.sock.su.sun_path, 0, sizeof(serv_addr.sock.su.sun_path));
         serv_addr.sock.su.sun_family = AF_UNIX;
         memcpy(&serv_addr.sock.su.sun_path, unix_socket_path, sizeof(unix_socket_path));
     }
@@ -1072,7 +1072,6 @@ int send_over_network() //TODO packete anpassen ip und so.
         local_serv_addr.sock.sin.sin_family = AF_INET;
         local_serv_addr.sock.sin.sin_addr.s_addr = INADDR_ANY;
         local_serv_addr.sock.sin.sin_port = htons(local_port);
-        WARNF("I'm in AF_INET");
         local_serv_addr.sock.sin.sin_addr.s_addr = inet_addr("127.0.0.1");
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.sin, sizeof(struct sockaddr_in))) {
             FATAL("Unable to bind socket on local source port");
@@ -1080,9 +1079,11 @@ int send_over_network() //TODO packete anpassen ip und so.
     }
     if (sock_fam == AF_UNIX) {
         memset(&local_serv_addr, 0, sizeof(struct sockaddr_un));
+        memset(&local_serv_addr.sock.su.sun_path, 0, sizeof(serv_addr.sock.su.sun_path));
         local_serv_addr.sock.su.sun_family = AF_UNIX;
-        snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path),
-                 "/tmp/afl_net_socket.%ld", (long) getpid());
+        //snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path), "/tmp/afl_net_socket.%ld", (long) getpid());
+        snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path), "/tmp/afl_net_socket");
+        unlink(local_serv_addr.sock.su.sun_path);
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.su, sizeof(struct sockaddr_un))) {
             FATAL("Unable to bind socket on unix domain socket. Path: %s Socket: %d Socket_FD: %d",local_serv_addr.sock.su.sun_path,sock_fam, sockfd);
         }
@@ -8025,7 +8026,9 @@ EXP_ST void check_binary(u8 *fname) {
     FATAL("Program '%s' is not a 64-bit Mach-O binary", target_path);
 
 #endif /* ^!__APPLE__ */
-
+    int a = !qemu_mode;
+    int b = !dumb_mode;
+    int c = !memmem(f_data, f_len, SHM_ENV_VAR, strlen(SHM_ENV_VAR) + 1);
     if (!qemu_mode && !dumb_mode &&
         !memmem(f_data, f_len, SHM_ENV_VAR, strlen(SHM_ENV_VAR) + 1)) {
 
@@ -9304,6 +9307,8 @@ int main(int argc, char **argv) {
     if (state_aware_mode) {
 
         if (state_ids_count == 0) {
+            unlink(unix_socket_path);
+            unlink("/tmp/afl_net_socket");
             PFATAL("No server states have been detected. Server responses are likely empty!");
         }
 
