@@ -306,6 +306,7 @@ static s16 interesting_16[] = {INTERESTING_8, INTERESTING_16};
 static s32 interesting_32[] = {INTERESTING_8, INTERESTING_16, INTERESTING_32};
 
 /* Fuzzing stages */
+#include <errno.h>
 
 enum {
     /* 00 */ STAGE_FLIP1,
@@ -1048,7 +1049,6 @@ int send_over_network() //TODO packete anpassen ip und so.
     timeout.tv_usec = socket_timeout_usecs;
     setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *) &timeout, sizeof(timeout));
 
-    //memset(&serv_addr, 0, sizeof(serv_addr)); TODO schauen, warum das nicht eght
     memset(&serv_addr, 0, sock_fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_un));
 
     //serv_addr.sin_family = sock_fam;
@@ -1079,24 +1079,29 @@ int send_over_network() //TODO packete anpassen ip und so.
     }
     if (sock_fam == AF_UNIX) {
         memset(&local_serv_addr, 0, sizeof(struct sockaddr_un));
-        memset(&local_serv_addr.sock.su.sun_path, 0, sizeof(serv_addr.sock.su.sun_path));
+        memset(&local_serv_addr.sock.su.sun_path, 0, sizeof(local_serv_addr.sock.su.sun_path));
         local_serv_addr.sock.su.sun_family = AF_UNIX;
         //snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path), "/tmp/afl_net_socket.%ld", (long) getpid());
         snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path), "/tmp/afl_net_socket");
         unlink(local_serv_addr.sock.su.sun_path);
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.su, sizeof(struct sockaddr_un))) {
-            FATAL("Unable to bind socket on unix domain socket. Path: %s Socket: %d Socket_FD: %d",local_serv_addr.sock.su.sun_path,sock_fam, sockfd);
+            FATAL("Unable to bind socket on unix domain socket. Path: %s Socket: %d Socket_FD: %d",
+                  local_serv_addr.sock.su.sun_path, sock_fam, sockfd);
         }
     }
-
-    if (connect(sockfd, &serv_addr.sock.sa, sock_fam == AF_INET ?
-                                            sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) < 0) {
+    //if (connect(sockfd, &serv_addr.sock.su, sizeof(struct sockaddr_un)) < 0) { //TODO SEGMENTATION FAULT??
+    int g = connect(sockfd, &serv_addr.sock.sa,
+                    sock_fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_un));
+    if ( g <
+        0) { //TODO SEGMENTATION FAULT??
         //If it cannot connect to the server under test
         //try it again as the server initial startup time is varied
         for (n = 0; n < 1000; n++) {
-            if (connect(sockfd, &serv_addr.sock.sa, sock_fam == AF_INET ?
-                                                    sizeof(serv_addr.sock.sin) : sizeof(serv_addr.sock.su)) == 0)
+            //perror("connection error: ");
+            if (connect(sockfd, &serv_addr.sock.sa,
+                        sock_fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_un)) < 0)
                 break;
+
             usleep(1000);
         }
         if (n == 1000) {
@@ -5479,9 +5484,9 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len) {
             len = regions[i].end_byte - regions[i].start_byte + 1;
         }
 
-        if (sock_fam == AF_UNIX) {
+        /*if (sock_fam == AF_UNIX) {
             len += PSEUDO_IP4_HDR;
-        }
+        }*/
 
         //Create a new message
         message_t *m = (message_t *) ck_alloc(sizeof(message_t)); //TODO hier die adressen hinzufügen
@@ -5489,20 +5494,47 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len) {
         m->msize = len;
         if (m->mdata == NULL) PFATAL("Unable to allocate memory region to store new message");
 
-        if (sock_fam == AF_UNIX) {
+        /*if (sock_fam == AF_UNIX) {
             uint8_t ipv4_hdr[IP_HDR_LEN];
             in_addr_t local_ip = inet_addr("127.0.0.1");
-            local_port = local_port == 0 ? 8899 : local_port; /* Default port if not set.*/
-            ipv4_hdr[0] = '\004'; /* Ipv4 indicator */
-            memcpy(&ipv4_hdr[IP_HDR_INDEX_ADDR_REMOTE_VER4], net_ip,sizeof(in_addr_t));
+            local_port = local_port == 0 ? 8899 : local_port;
+            ipv4_hdr[0] = '\004';
+            memcpy(&ipv4_hdr[IP_HDR_INDEX_ADDR_REMOTE_VER4], net_ip, sizeof(in_addr_t));
             memcpy(&ipv4_hdr[IP_HDR_INDEX_ADDR_LOCAL_VER4], &local_ip, sizeof(in_addr_t));
-            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_REMOTE_VER4], &net_port,sizeof(in_port_t));
-            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_LOCAL_VER4], &local_port,sizeof(in_port_t));
+            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_REMOTE_VER4], &net_port, sizeof(in_port_t));
+            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_LOCAL_VER4], &local_port, sizeof(in_port_t));
             memcpy(m->mdata, &ipv4_hdr, IP_HDR_LEN);
             memcpy(m->mdata, &out_buf[regions[i].start_byte + IP_HDR_LEN], len - IP_HDR_LEN);
-        } else {
+            ///////////
+            /*#define GetCurrentDir getcwd
+            char buff[FILENAME_MAX]; //create string buffer to hold path
+            GetCurrentDir( buff, FILENAME_MAX );
+            PFATAL("%s",buff);*/
+
+
+            /*FILE *fp;
+            fp = fopen("testoutput.txt", "w");
+            if(fp == NULL) {
+                printf("file can't be opened\n");
+                exit(1);
+            }
+            fprintf(fp, "%s\n", m->mdata);
+            fprintf(fp, "%s\n", &m->mdata[13]);
+            fclose(fp);*/
+            ///////////
+        //} else {
             memcpy(m->mdata, &out_buf[regions[i].start_byte], len);
-        }
+            FILE * fPtr;
+            fPtr = fopen("testoutputs.txt", "w");
+
+            if(fPtr == NULL) {
+                printf("Unable to create file.\n");
+                exit(EXIT_FAILURE);
+            }
+            fputs((const char*) m->mdata, fPtr);
+            fclose(fPtr);
+            printf("File created and saved successfully. :) \n");
+        //}
 
         //Insert the message to the linked list
         *kl_pushp(lms, kl_messages) = m;
@@ -9309,7 +9341,7 @@ int main(int argc, char **argv) {
         if (state_ids_count == 0) {
             unlink(unix_socket_path);
             unlink("/tmp/afl_net_socket");
-            PFATAL("No server states have been detected. Server responses are likely empty!");
+            PFATAL("No server states have been detected. Server responses are likely empty!"); //TODO IDEE: SERVER SENDET SOFORT ZURÜK BEVOR DROPPT:
         }
 
         while (1) {
