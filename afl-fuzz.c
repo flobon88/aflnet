@@ -1002,15 +1002,99 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run) {
     if (state_sequence) ck_free(state_sequence);
 }
 
+#define SLIP_END     ((uint8_t)0300)
+#define SLIP_ESC     ((uint8_t)0333)
+#define SLIP_ESC_END ((uint8_t)0334)
+#define SLIP_ESC_ESC ((uint8_t)0335)
+#define IP_HDR_VER4 ((uint8_t)0004)
+#define IP_HDR_INDEX_ADDR_REMOTE_VER4 ((ssize_t)1)
+#define IP_HDR_INDEX_ADDR_LOCAL_VER4 ((ssize_t)5)
+#define IP_HDR_INDEX_PORT_REMOTE_VER4 ((ssize_t)9)
+#define IP_HDR_INDEX_PORT_LOCAL_VER4 ((ssize_t)11)
+#define IP_HDR_SIZE_VER4 ((ssize_t)13)
+
+ssize_t slip_proto(u8 *p, const u8 *data, size_t len) {
+    ssize_t send = 0;
+    p[send++] = SLIP_END;
+
+    while (len--) {
+        switch (*data) {
+            case SLIP_END:
+                p[send++] = SLIP_ESC;
+                p[send++] = SLIP_ESC_END;
+                break;
+            case SLIP_ESC:
+                p[send++] = SLIP_ESC;
+                p[send++] = SLIP_ESC_ESC;
+                break;
+            default:
+                p[send++] = *data;
+        }
+
+        data++;
+    }
+    p[send++] = SLIP_END;
+    return send;
+}
+
+ssize_t recv_packet(uint8_t *p, const uint8_t *data, size_t len) {
+    uint8_t c;
+    int received = 0;
+    for (int i = 0; i < len; i++) {
+        c = data[i];
+        switch (c) {
+            case SLIP_END:
+                if (received)
+                    return received;
+                else
+                    break;
+            case SLIP_ESC:
+                assert(i + 1 < len);
+                i++;
+                c = data[i];
+                switch (c) {
+                    case SLIP_ESC_END:
+                        c = SLIP_END;
+                        break;
+                    case SLIP_ESC_ESC:
+                        c = SLIP_ESC;
+                        break;
+                    default:
+                        return -1;
+                }
+            default:
+                if (received < len)
+                    p[received++] = c;
+        }
+    }
+    return received;
+}
+
+ssize_t add_metadata(struct __kl1_lms *it, u8 **packet_ptr) {
+    u8 ip_packet[kl_val(it)->msize + IP_HDR_SIZE_VER4];
+    ip_packet[0] = IP_HDR_VER4;
+    in_addr_t remote_addr = inet_addr(net_ip);
+    memcpy(&ip_packet[IP_HDR_INDEX_ADDR_REMOTE_VER4], &remote_addr, sizeof(in_addr_t));
+    memcpy(&ip_packet[IP_HDR_INDEX_ADDR_LOCAL_VER4], &ip_packet,
+           sizeof(in_addr_t));
+    memcpy(&ip_packet[IP_HDR_INDEX_PORT_REMOTE_VER4], &net_port,
+           sizeof(in_port_t));
+    memcpy(&ip_packet[IP_HDR_INDEX_PORT_LOCAL_VER4], &local_port,
+           sizeof(in_port_t));
+    memcpy(&ip_packet[IP_HDR_SIZE_VER4], kl_val(it)->mdata, kl_val(it)->msize);
+    u8 slip_packet[(kl_val(it)->msize + IP_HDR_SIZE_VER4) * 3];
+    *packet_ptr = slip_packet;
+    memset(*packet_ptr, 0, (kl_val(it)->msize + IP_HDR_SIZE_VER4) * 3);
+    return slip_proto(*packet_ptr, ip_packet, (kl_val(it)->msize) + (IP_HDR_SIZE_VER4));
+}
+
 /* Send (mutated) messages in order to the server under test */
-int send_over_network() //TODO packete anpassen ip und so.
-{
+int send_over_network() {
     int n;
     u8 likely_buggy = 0;
     struct sock_addr serv_addr;
     struct sock_addr local_serv_addr;
-    //struct sockaddr_in serv_addr;
-    //struct sockaddr_in local_serv_addr;
+    in_addr_t local_net = inet_addr("127.0.0.1");
 
 
     //Clean up the server if needed
@@ -1051,9 +1135,6 @@ int send_over_network() //TODO packete anpassen ip und so.
 
     memset(&serv_addr, 0, sock_fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_un));
 
-    //serv_addr.sin_family = sock_fam;
-    //serv_addr.sin_port = htons(net_port);
-    //serv_addr.sin_addr.s_addr = inet_addr(net_ip);
     if (sock_fam == AF_INET) {
         serv_addr.sock.sin.sin_family = AF_INET;
         serv_addr.sock.sin.sin_port = htons(net_port);
@@ -1072,7 +1153,7 @@ int send_over_network() //TODO packete anpassen ip und so.
         local_serv_addr.sock.sin.sin_family = AF_INET;
         local_serv_addr.sock.sin.sin_addr.s_addr = INADDR_ANY;
         local_serv_addr.sock.sin.sin_port = htons(local_port);
-        local_serv_addr.sock.sin.sin_addr.s_addr = inet_addr("127.0.0.1");
+        local_serv_addr.sock.sin.sin_addr.s_addr = local_net;
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.sin, sizeof(struct sockaddr_in))) {
             FATAL("Unable to bind socket on local source port");
         }
@@ -1081,23 +1162,18 @@ int send_over_network() //TODO packete anpassen ip und so.
         memset(&local_serv_addr, 0, sizeof(struct sockaddr_un));
         memset(&local_serv_addr.sock.su.sun_path, 0, sizeof(local_serv_addr.sock.su.sun_path));
         local_serv_addr.sock.su.sun_family = AF_UNIX;
-        //snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path), "/tmp/afl_net_socket.%ld", (long) getpid());
-        snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path), "/tmp/afl_net_socket");
+        snprintf(local_serv_addr.sock.su.sun_path, sizeof(local_serv_addr.sock.su.sun_path), "/tmp/afl_net_socket.%ld",
+                 (ssize_t) getpid());
         unlink(local_serv_addr.sock.su.sun_path);
         if (bind(sockfd, (struct sockaddr *) &local_serv_addr.sock.su, sizeof(struct sockaddr_un))) {
             FATAL("Unable to bind socket on unix domain socket. Path: %s Socket: %d Socket_FD: %d",
                   local_serv_addr.sock.su.sun_path, sock_fam, sockfd);
         }
     }
-    //if (connect(sockfd, &serv_addr.sock.su, sizeof(struct sockaddr_un)) < 0) { //TODO SEGMENTATION FAULT??
-    int g = connect(sockfd, &serv_addr.sock.sa,
-                    sock_fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_un));
-    if ( g <
-        0) { //TODO SEGMENTATION FAULT??
+    if (connect(sockfd, &serv_addr.sock.su, sizeof(struct sockaddr_un)) < 0) {
         //If it cannot connect to the server under test
         //try it again as the server initial startup time is varied
         for (n = 0; n < 1000; n++) {
-            //perror("connection error: ");
             if (connect(sockfd, &serv_addr.sock.sa,
                         sock_fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_un)) < 0)
                 break;
@@ -1111,14 +1187,22 @@ int send_over_network() //TODO packete anpassen ip und so.
     }
 
     //retrieve early server response if needed
-    if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+    if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+        goto HANDLE_RESPONSES;
+    }
 
     //write the request messages
     kliter_t(lms) *it;
     messages_sent = 0;
 
     for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
-        n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+        if (net_protocol == PRO_UDP && sock_fam == AF_UNIX) {
+            u8 *packet_ptr = NULL;
+            kl_val(it)->msize = (int) add_metadata(it, &packet_ptr);
+            n = net_send(sockfd, timeout, packet_ptr, kl_val(it)->msize);
+        } else {
+            n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+        }
         messages_sent++;
 
         //Allocate memory to store new accumulated response buffer size
@@ -1134,6 +1218,13 @@ int send_over_network() //TODO packete anpassen ip und so.
         if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
             goto HANDLE_RESPONSES;
         }
+
+        //Unwrap slip protocol
+        u8 slip_response[response_buf_size];
+        memset(slip_response, '\000', response_buf_size);
+        recv_packet(slip_response, response_buf, response_buf_size);
+        memcpy(response_buf, slip_response, response_buf_size);
+
 
         //Update accumulated response buffer size
         response_bytes[messages_sent - 1] = response_buf_size;
@@ -5493,48 +5584,8 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len) {
         m->mdata = (char *) ck_alloc(len);
         m->msize = len;
         if (m->mdata == NULL) PFATAL("Unable to allocate memory region to store new message");
+        memcpy(m->mdata, &out_buf[regions[i].start_byte], len);
 
-        /*if (sock_fam == AF_UNIX) {
-            uint8_t ipv4_hdr[IP_HDR_LEN];
-            in_addr_t local_ip = inet_addr("127.0.0.1");
-            local_port = local_port == 0 ? 8899 : local_port;
-            ipv4_hdr[0] = '\004';
-            memcpy(&ipv4_hdr[IP_HDR_INDEX_ADDR_REMOTE_VER4], net_ip, sizeof(in_addr_t));
-            memcpy(&ipv4_hdr[IP_HDR_INDEX_ADDR_LOCAL_VER4], &local_ip, sizeof(in_addr_t));
-            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_REMOTE_VER4], &net_port, sizeof(in_port_t));
-            memcpy(&ipv4_hdr[IP_HDR_INDEX_PORT_LOCAL_VER4], &local_port, sizeof(in_port_t));
-            memcpy(m->mdata, &ipv4_hdr, IP_HDR_LEN);
-            memcpy(m->mdata, &out_buf[regions[i].start_byte + IP_HDR_LEN], len - IP_HDR_LEN);
-            ///////////
-            /*#define GetCurrentDir getcwd
-            char buff[FILENAME_MAX]; //create string buffer to hold path
-            GetCurrentDir( buff, FILENAME_MAX );
-            PFATAL("%s",buff);*/
-
-
-            /*FILE *fp;
-            fp = fopen("testoutput.txt", "w");
-            if(fp == NULL) {
-                printf("file can't be opened\n");
-                exit(1);
-            }
-            fprintf(fp, "%s\n", m->mdata);
-            fprintf(fp, "%s\n", &m->mdata[13]);
-            fclose(fp);*/
-            ///////////
-        //} else {
-            memcpy(m->mdata, &out_buf[regions[i].start_byte], len);
-            FILE * fPtr;
-            fPtr = fopen("testoutputs.txt", "w");
-
-            if(fPtr == NULL) {
-                printf("Unable to create file.\n");
-                exit(EXIT_FAILURE);
-            }
-            fputs((const char*) m->mdata, fPtr);
-            fclose(fPtr);
-            printf("File created and saved successfully. :) \n");
-        //}
 
         //Insert the message to the linked list
         *kl_pushp(lms, kl_messages) = m;
@@ -8058,9 +8109,6 @@ EXP_ST void check_binary(u8 *fname) {
     FATAL("Program '%s' is not a 64-bit Mach-O binary", target_path);
 
 #endif /* ^!__APPLE__ */
-    int a = !qemu_mode;
-    int b = !dumb_mode;
-    int c = !memmem(f_data, f_len, SHM_ENV_VAR, strlen(SHM_ENV_VAR) + 1);
     if (!qemu_mode && !dumb_mode &&
         !memmem(f_data, f_len, SHM_ENV_VAR, strlen(SHM_ENV_VAR) + 1)) {
 

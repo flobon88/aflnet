@@ -1613,24 +1613,12 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
     pfd[0].fd = sockfd;
     pfd[0].events = POLLOUT;
     int rv = poll(pfd, 1, 1);
-    struct sockaddr_un ser_addr;
-    memset(&ser_addr,0,sizeof(struct sockaddr_un));
-    snprintf(ser_addr.sun_path, sizeof(ser_addr.sun_path), "/tmp/coap_unix_socket.socket");
-    ser_addr.sun_family = AF_UNIX;
     setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *) &timeout, sizeof(timeout));
     if (rv > 0) {
         if (pfd[0].revents & POLLOUT) {
             while (byte_count < len) {
-                usleep(10);
-                /*n = sendto(sockfd, &mem[byte_count], len - byte_count, 0,
-                           (const struct sockaddr *) &ser_addr,
-                           sizeof(struct sockaddr_un));*/
+                //usleep(10);
                 n = send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
-                if (n == -1) {
-                    perror("send error");
-                }else{
-                    perror("send WORKED");
-                }
                 if (n == 0) return byte_count;
                 if (n == -1) return -1;
                 byte_count += n;
@@ -1653,24 +1641,18 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
     if (rv > 0) {
         if (pfd[0].revents & POLLIN) {
             n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
-            if ((n < 0) && (errno != EAGAIN)) {
-                perror("received failed: ");
+            if ((n < 0) && (errno != EAGAIN))
                 return 1;
-            } else{
-                perror("received WORKED: ");
-            }
+
             while (n > 0) {
-                usleep(10);
+                //usleep(10);
                 *response_buf = (unsigned char *) ck_realloc(*response_buf, *len + n + 1);
                 memcpy(&(*response_buf)[*len], temp_buf, n);
                 (*response_buf)[(*len) + n] = '\0';
                 *len = *len + n;
                 n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
                 if ((n < 0) && (errno != EAGAIN)) {
-                    perror("received failed: ");
                     return 1;
-                }else{
-                    perror("received WORKED: ");
                 }
             }
         }
