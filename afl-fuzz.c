@@ -1070,7 +1070,7 @@ ssize_t recv_packet(uint8_t *p, const uint8_t *data, size_t len) {
     return received;
 }
 
-ssize_t add_metadata(struct __kl1_lms *it, u8 **packet_ptr) {
+ssize_t add_metadata(struct __kl1_lms *it, u8 *packet_ptr) {
     u8 ip_packet[kl_val(it)->msize + IP_HDR_SIZE_VER4];
     ip_packet[0] = IP_HDR_VER4;
     in_addr_t remote_addr = inet_addr(net_ip);
@@ -1082,10 +1082,7 @@ ssize_t add_metadata(struct __kl1_lms *it, u8 **packet_ptr) {
     memcpy(&ip_packet[IP_HDR_INDEX_PORT_LOCAL_VER4], &local_port,
            sizeof(in_port_t));
     memcpy(&ip_packet[IP_HDR_SIZE_VER4], kl_val(it)->mdata, kl_val(it)->msize);
-    u8 slip_packet[(kl_val(it)->msize + IP_HDR_SIZE_VER4) * 3];
-    *packet_ptr = slip_packet;
-    memset(*packet_ptr, 0, (kl_val(it)->msize + IP_HDR_SIZE_VER4) * 3);
-    return slip_proto(*packet_ptr, ip_packet, (kl_val(it)->msize) + (IP_HDR_SIZE_VER4));
+    return slip_proto(packet_ptr, ip_packet, (kl_val(it)->msize) + (IP_HDR_SIZE_VER4));
 }
 
 /* Send (mutated) messages in order to the server under test */
@@ -1197,8 +1194,9 @@ int send_over_network() {
 
     for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
         if (net_protocol == PRO_UDP && sock_fam == AF_UNIX) {
-            u8 *packet_ptr = NULL;
-            kl_val(it)->msize = (int) add_metadata(it, &packet_ptr);
+            u8 packet_ptr[((kl_val(it)->msize) + (IP_HDR_SIZE_VER4)) * 3];
+            memset(packet_ptr, '\000', (kl_val(it)->msize + IP_HDR_SIZE_VER4) * 3);
+            add_metadata(it, packet_ptr);
             n = net_send(sockfd, timeout, packet_ptr, kl_val(it)->msize);
         } else {
             n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
@@ -1209,7 +1207,7 @@ int send_over_network() {
         response_bytes = (u32 *) ck_realloc(response_bytes, messages_sent * sizeof(u32));
 
         //Jump out if something wrong leading to incomplete message sent
-        if (n != kl_val(it)->msize) {
+        if (n < kl_val(it)->msize) {
             goto HANDLE_RESPONSES;
         }
 
