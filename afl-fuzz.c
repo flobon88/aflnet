@@ -190,9 +190,12 @@ unique_hangs,              /* Hangs with unique signatures     */
 total_execs,               /* Total execve() calls             */
 slowest_exec_ms,           /* Slowest testcase non hang in ms  */
 start_time,                /* Unix start time (ms)             */
+time_without_send_recv,    /* Unix start time + send/recv (ms) */
 last_path_time,            /* Time for most recent path (ms)   */
 last_crash_time,           /* Time for most recent crash (ms)  */
 last_hang_time,            /* Time for most recent hang (ms)   */
+working_time_send_recv,    /* Time required for send/recv (ms) */
+total_transmissions,       /* Total number of data sent        */
 last_crash_execs,          /* Exec counter at last crash       */
 queue_cycle,               /* Queue round counter              */
 cycles_wo_finds,           /* Cycles without any new paths     */
@@ -202,6 +205,7 @@ bytes_trim_out,            /* Bytes coming outa the trimmer    */
 blocks_eff_total,          /* Blocks subject to effector maps  */
 blocks_eff_select;         /* Blocks selected as fuzzable      */
 
+static double true_avg_execs;         /* Gives execs without smoothing    */
 static u32 subseq_tmouts;             /* Number of timeouts in a row      */
 
 static u8 *stage_name = "init",       /* Name of the current fuzz stage   */
@@ -1085,6 +1089,13 @@ ssize_t add_metadata(struct __kl1_lms *it, u8 *packet_ptr) {
     return slip_proto(packet_ptr, ip_packet, (kl_val(it)->msize) + (IP_HDR_SIZE_VER4));
 }
 
+void unwrap_metadata(){
+    u8 slip_response[response_buf_size];
+    memset(slip_response, '\000', response_buf_size);
+    recv_packet(slip_response, response_buf, response_buf_size);
+    memcpy(response_buf, slip_response, response_buf_size);
+}
+static u64 get_cur_time(void);
 /* Send (mutated) messages in order to the server under test */
 int send_over_network() {
     int n;
@@ -1092,6 +1103,8 @@ int send_over_network() {
     struct sock_addr serv_addr;
     struct sock_addr local_serv_addr;
     in_addr_t local_net = inet_addr("127.0.0.1");
+    u64 start_measure = 0;
+    u64 end_measure = 0;
 
 
     //Clean up the server if needed
@@ -1115,9 +1128,9 @@ int send_over_network() {
     //Create a TCP/UDP socket
     int sockfd = -1;
     if (net_protocol == PRO_TCP)
-        sockfd = socket(sock_fam, SOCK_STREAM, 0);
+        sockfd = socket(sock_fam, SOCK_STREAM | SOCK_NONBLOCK, 0);
     else if (net_protocol == PRO_UDP)
-        sockfd = socket(sock_fam, SOCK_DGRAM, 0);
+        sockfd = socket(sock_fam, SOCK_DGRAM | SOCK_NONBLOCK, 0);
 
     if (sockfd < 0) {
         PFATAL("Cannot create a socket");
@@ -1197,10 +1210,13 @@ int send_over_network() {
             u8 packet_ptr[((kl_val(it)->msize) + (IP_HDR_SIZE_VER4)) * 3];
             memset(packet_ptr, '\000', (kl_val(it)->msize + IP_HDR_SIZE_VER4) * 3);
             add_metadata(it, packet_ptr);
+            start_measure = get_cur_time();
             n = net_send(sockfd, timeout, packet_ptr, kl_val(it)->msize);
         } else {
+            start_measure = get_cur_time();
             n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
         }
+        total_transmissions++;
         messages_sent++;
 
         //Allocate memory to store new accumulated response buffer size
@@ -1214,14 +1230,17 @@ int send_over_network() {
         //retrieve server response
         u32 prev_buf_size = response_buf_size;
         if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+            end_measure = get_cur_time();
+            working_time_send_recv += end_measure - start_measure;
+            time_without_send_recv += end_measure - start_measure;
             goto HANDLE_RESPONSES;
         }
-
+        end_measure = get_cur_time();
+        working_time_send_recv += end_measure - start_measure;
+        time_without_send_recv += end_measure - start_measure;
         //Unwrap slip protocol
-        u8 slip_response[response_buf_size];
-        memset(slip_response, '\000', response_buf_size);
-        recv_packet(slip_response, response_buf, response_buf_size);
-        memcpy(response_buf, slip_response, response_buf_size);
+        if(sock_fam == AF_UNIX)
+            unwrap_metadata();
 
 
         //Update accumulated response buffer size
@@ -1236,8 +1255,19 @@ int send_over_network() {
     HANDLE_RESPONSES:
 
     net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
-
+    if(end_measure){
+        // Add additional time needed.
+        working_time_send_recv += get_cur_time() - end_measure;
+        time_without_send_recv += get_cur_time() - end_measure;
+    }else{
+        end_measure = get_cur_time();
+        working_time_send_recv += end_measure - start_measure;
+        time_without_send_recv += end_measure - start_measure;
+    }
     if (messages_sent > 0 && response_bytes != NULL) {
+        //Unwrap slip protocol
+        if(sock_fam == AF_UNIX)
+            unwrap_metadata();
         response_bytes[messages_sent - 1] = response_buf_size;
     }
 
@@ -1248,10 +1278,10 @@ int send_over_network() {
     }
 
     close(sockfd);
-
     if (likely_buggy && false_negative_reduction) return 0;
 
     if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
+    unlink(unix_socket_path);
 
     //give the server a bit more time to gracefully terminate
     while (1) {
@@ -4456,7 +4486,11 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
                "afl_version       : " VERSION "\n"
                "target_mode       : %s%s%s%s%s%s%s\n"
                "command_line      : %s\n"
-               "slowest_exec_ms   : %llu\n",
+               "slowest_exec_ms   : %llu\n"
+               "execs_work_time_per_sec : %0.02f\n"
+               "execs_without_work_time_per_sec : %0.02f\n"
+               "transmissions : %llu\n"
+               "true_avg_execs : %0.02f\n",
             start_time / 1000, get_cur_time() / 1000, getpid(),
             queue_cycle ? (queue_cycle - 1) : 0, total_execs, eps,
             queued_paths, queued_favored, queued_discovered, queued_imported,
@@ -4470,7 +4504,9 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
             persistent_mode ? "persistent " : "", deferred_mode ? "deferred " : "",
             (qemu_mode || dumb_mode || no_forkserver || crash_mode ||
              persistent_mode || deferred_mode) ? "" : "default",
-            orig_cmdline, slowest_exec_ms);
+            orig_cmdline, slowest_exec_ms,((double) total_transmissions) * 1000 / (double) working_time_send_recv,
+            ((double) total_execs) * 1000 / (double) (get_cur_time() - time_without_send_recv), total_transmissions,
+            (double) true_avg_execs);
     /* ignore errors */
 
     /* Get rss value from the children
@@ -4522,10 +4558,12 @@ static void maybe_update_plot_file(double bitmap_cvg, double eps) {
      execs_per_sec */
 
     fprintf(plot_file,
-            "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f\n",
+            "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f, %0.02f, %0.02f, %llu, %0.02f\n",
             get_cur_time() / 1000, queue_cycle - 1, current_entry, queued_paths,
             pending_not_fuzzed, pending_favored, bitmap_cvg, unique_crashes,
-            unique_hangs, max_depth, eps); /* ignore errors */
+            unique_hangs, max_depth, eps, ((double) total_transmissions) * 1000 / (double) working_time_send_recv,
+            ((double) total_execs) * 1000 / (double) (get_cur_time() - time_without_send_recv), total_transmissions,
+            (double) true_avg_execs); /* ignore errors */
 
     fflush(plot_file);
 
@@ -4963,7 +5001,7 @@ static void show_stats(void) {
 
         double cur_avg = ((double) (total_execs - last_execs)) * 1000 /
                          (cur_ms - last_ms);
-
+        true_avg_execs = cur_avg;
         /* If there is a dramatic (5x+) jump in speed, reset the indicator
        more quickly. */
 
@@ -8434,7 +8472,8 @@ EXP_ST void setup_dirs_fds(void) {
 
     fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
                        "pending_total, pending_favs, map_size, unique_crashes, "
-                       "unique_hangs, max_depth, execs_per_sec\n");
+                       "unique_hangs, max_depth, execs_per_sec, execs_transmissions_sec, "
+                       "execs_without_transmissions_sec, transmissions, true_execs_sec\n");
     /* ignore errors */
 
 }
@@ -9355,6 +9394,7 @@ int main(int argc, char **argv) {
     check_binary(argv[optind]);
 
     start_time = get_cur_time();
+    time_without_send_recv = start_time;
 
     if (qemu_mode)
         use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
@@ -9379,15 +9419,14 @@ int main(int argc, char **argv) {
     if (!not_on_tty) {
         sleep(4);
         start_time += 4000;
+        time_without_send_recv += 4000;
         if (stop_soon) goto stop_fuzzing;
     }
 
     if (state_aware_mode) {
 
         if (state_ids_count == 0) {
-            unlink(unix_socket_path);
-            unlink("/tmp/afl_net_socket");
-            PFATAL("No server states have been detected. Server responses are likely empty!"); //TODO IDEE: SERVER SENDET SOFORT ZURÜK BEVOR DROPPT:
+            PFATAL("No server states have been detected. Server responses are likely empty!");
         }
 
         while (1) {
