@@ -1077,7 +1077,7 @@ ssize_t recv_packet(uint8_t *p, const uint8_t *data, size_t len) {
 ssize_t add_metadata(struct __kl1_lms *it, u8 *packet_ptr) {
     u8 ip_packet[kl_val(it)->msize + IP_HDR_SIZE_VER4];
     ip_packet[0] = IP_HDR_VER4;
-    in_addr_t remote_addr = inet_addr(net_ip);
+    in_addr_t remote_addr = inet_addr((const char*) net_ip);
     memcpy(&ip_packet[IP_HDR_INDEX_ADDR_REMOTE_VER4], &remote_addr, sizeof(in_addr_t));
     memcpy(&ip_packet[IP_HDR_INDEX_ADDR_LOCAL_VER4], &ip_packet,
            sizeof(in_addr_t));
@@ -1092,7 +1092,7 @@ ssize_t add_metadata(struct __kl1_lms *it, u8 *packet_ptr) {
 void unwrap_metadata(){
     u8 slip_response[response_buf_size];
     memset(slip_response, '\000', response_buf_size);
-    recv_packet(slip_response, response_buf, response_buf_size);
+    recv_packet(slip_response,  (const u8*) response_buf, response_buf_size);
     memcpy(response_buf, slip_response, response_buf_size);
 }
 static u64 get_cur_time(void);
@@ -1148,7 +1148,7 @@ int send_over_network() {
     if (sock_fam == AF_INET) {
         serv_addr.sock.sin.sin_family = AF_INET;
         serv_addr.sock.sin.sin_port = htons(net_port);
-        serv_addr.sock.sin.sin_addr.s_addr = inet_addr(net_ip);
+        serv_addr.sock.sin.sin_addr.s_addr = inet_addr((const char*) net_ip);
     } else {
         memset(&serv_addr.sock.su.sun_path, 0, sizeof(serv_addr.sock.su.sun_path));
         serv_addr.sock.su.sun_family = AF_UNIX;
@@ -1209,9 +1209,9 @@ int send_over_network() {
         if (net_protocol == PRO_UDP && sock_fam == AF_UNIX) {
             u8 packet_ptr[((kl_val(it)->msize) + (IP_HDR_SIZE_VER4)) * 3];
             memset(packet_ptr, '\000', (kl_val(it)->msize + IP_HDR_SIZE_VER4) * 3);
-            add_metadata(it, packet_ptr);
+            ssize_t packet_len = add_metadata(it, packet_ptr);
             start_measure = get_cur_time();
-            n = net_send(sockfd, timeout, packet_ptr, kl_val(it)->msize);
+            n = net_send(sockfd, timeout, (char*) packet_ptr, packet_len);
         } else {
             start_measure = get_cur_time();
             n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
@@ -1239,7 +1239,7 @@ int send_over_network() {
         working_time_send_recv += end_measure - start_measure;
         time_without_send_recv += end_measure - start_measure;
         //Unwrap slip protocol
-        if(sock_fam == AF_UNIX)
+        if(net_protocol == PRO_UDP && sock_fam == AF_UNIX)
             unwrap_metadata();
 
 
@@ -1266,7 +1266,7 @@ int send_over_network() {
     }
     if (messages_sent > 0 && response_bytes != NULL) {
         //Unwrap slip protocol
-        if(sock_fam == AF_UNIX)
+        if(net_protocol == PRO_UDP && sock_fam == AF_UNIX)
             unwrap_metadata();
         response_bytes[messages_sent - 1] = response_buf_size;
     }
@@ -5616,7 +5616,7 @@ EXP_ST u8 common_fuzz_stuff(char **argv, u8 *out_buf, u32 len) {
         }*/
 
         //Create a new message
-        message_t *m = (message_t *) ck_alloc(sizeof(message_t)); //TODO hier die adressen hinzufügen
+        message_t *m = (message_t *) ck_alloc(sizeof(message_t));
         m->mdata = (char *) ck_alloc(len);
         m->msize = len;
         if (m->mdata == NULL) PFATAL("Unable to allocate memory region to store new message");
